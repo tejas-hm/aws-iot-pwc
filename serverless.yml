@@ -1,0 +1,367 @@
+org: tejasdadhe
+service: aws-iot
+
+provider:
+  name: aws
+  runtime: nodejs16.x
+  region: us-east-1
+  environment:
+    user_pool_id: { Ref: UserPool }
+    client_id: { Ref: UserClient }
+    iot_endpoint: ${self:custom.iotEndpoint}
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - cognito-idp:AdminInitiateAuth
+        - cognito-idp:AdminCreateUser
+        - cognito-idp:AdminSetUserPassword
+        - dynamodb:Scan
+        - dynamodb:UpdateItem
+        - dynamodb:GetItem
+        - dynamodb:BatchGetItem
+        - iot:Publish
+        - "kinesis:PutRecord"
+        - "kinesis:PutRecords"
+        - "s3:PutObject"
+
+      Resource: "*"
+
+package:
+  individually: true
+  exclude:
+    - "tests/**"
+    - "tests-integration/**"
+    - ".idea/**"
+    - "serverless-configs/**"
+    - "envs/**"
+    - "support/**"
+    - "scripts/**"
+
+custom:
+  subscriptionTable: subscriptions
+  deviceDataTable: deviceData
+  plansDataTable: plansData
+  usersDataTable: usersData
+  iotEndpoint: ${file(./iot-endpoint.json):endpoint}
+
+  scriptHooks:
+    before:package:createDeploymentArtifacts: "node deployment-script-get-iot-endpoint"
+    # after:package:createDeploymentArtifacts: "rm iot-endpoint.json"
+
+  esbuild:
+    bundle: true
+    minify: false
+    sourcemap: true
+    exclude: "aws-sdk"
+    target: node14
+    define:
+      "require.resolve": undefined
+    platform: node
+    concurrency: 10
+
+build:
+  esbuild: false
+
+plugins:
+  - serverless-esbuild
+  # - serverless-offline
+  # - serverless-pseudo-parameters
+  - serverless-scriptable-plugin
+
+resources:
+  Resources:
+    UserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: iot-poc-auth-pool
+        Schema:
+          - Name: email
+            Required: true
+            Mutable: true
+        Policies:
+          PasswordPolicy:
+            MinimumLength: 6
+        AutoVerifiedAttributes: ["email"]
+
+    UserClient:
+      Type: AWS::Cognito::UserPoolClient
+      Properties:
+        ClientName: user-pool-ui
+        GenerateSecret: false
+        UserPoolId: { Ref: UserPool }
+        AccessTokenValidity: 5
+        IdTokenValidity: 5
+        ExplicitAuthFlows:
+          - "ADMIN_NO_SRP_AUTH"
+
+    DynamoDbTableForSubscription:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.subscriptionTable}
+        AttributeDefinitions:
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: email
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    DynamoDbTableForDeviceData:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.deviceDataTable}
+        AttributeDefinitions:
+          - AttributeName: deviceId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: deviceId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    DynamoDbTableForPlansData:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.plansDataTable}
+        AttributeDefinitions:
+          - AttributeName: planId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: planId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    DynamoDbTableForUsersData:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.usersDataTable}
+        AttributeDefinitions:
+          - AttributeName: email
+            AttributeType: S
+        KeySchema:
+          - AttributeName: email
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+    IotCorePolicy:
+      Type: AWS::IoT::Policy
+      Properties:
+        PolicyName: IotCorePolicyForAwsPoc
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - "iot:Connect"
+                - "iot:Publish"
+                - "iot:Subscribe"
+                - "iot:Receive"
+              Resource: "*"
+
+    IotCoreThingType:
+      Type: AWS::IoT::ThingType
+      Properties:
+        ThingTypeName: DEVICE_TYPE_AC
+
+    IotToKinesisStream:
+      Type: AWS::Kinesis::Stream
+      Properties:
+        Name: "device-data-stream"
+        ShardCount: 1
+        RetentionPeriodHours: 24
+
+    IoTToKinesisRule:
+      Type: AWS::IoT::TopicRule
+      Properties:
+        RuleName: "IoTToKinesisRule"
+        TopicRulePayload:
+          Sql: "SELECT * FROM 'devices/#'"
+          Actions:
+            - Kinesis:
+                StreamName: "device-data-stream"
+                RoleArn:
+                  Fn::GetAtt:
+                    - IoTToKinesisRole
+                    - Arn
+                PartitionKey: "default"
+          RuleDisabled: false
+
+    IoTToKinesisRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: "Allow"
+              Principal:
+                Service: "iot.amazonaws.com"
+              Action: "sts:AssumeRole"
+        Policies:
+          - PolicyName: "IoTToKinesisPolicy"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: "Allow"
+                  Action:
+                    - "kinesis:PutRecord"
+                    - "kinesis:PutRecords"
+                  Resource:
+                    Fn::GetAtt:
+                      - IotToKinesisStream
+                      - Arn
+
+    DeviceDataStorageBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: iot-poc-device-data-archive
+        VersioningConfiguration:
+          Status: Enabled
+
+functions:
+  loginUser:
+    handler: functions/login.handler
+    events:
+      - http:
+          path: user/login
+          method: post
+          cors: true
+
+  signupUser:
+    handler: functions/signup.handler
+    events:
+      - http:
+          path: user/signup
+          method: post
+          cors: true
+
+  fetchPlans:
+    handler: functions/fetchPlans.handler
+    events:
+      - http:
+          path: subscription/plans
+          method: get
+          cors: true
+
+  addSubscription:
+    handler: functions/addSubscription.handler
+    events:
+      - http:
+          path: subscription/add
+          method: post
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+
+  addDevice:
+    handler: functions/addDevice.handler
+    events:
+      - http:
+          path: device/add
+          method: post
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+
+  removeDevice:
+    handler: functions/removeDevice.handler
+    events:
+      - http:
+          path: device/remove
+          method: post
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+
+  fetchDevice:
+    handler: functions/fetchDevice.handler
+    events:
+      - http:
+          path: device/fetch
+          method: get
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+
+  scanDevice:
+    handler: functions/scanDevice.handler
+    events:
+      - http:
+          path: device/scan
+          method: get
+          cors: true
+
+  controlDevice:
+    handler: functions/controlDevice.handler
+    events:
+      - http:
+          path: device/control
+          method: post
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+    environment:
+      iot_endpoint: ${self:provider.environment.iot_endpoint}
+
+  fetchSubscription:
+    handler: functions/fetchSubscription.handler
+    events:
+      - http:
+          path: subscription/fetch
+          method: get
+          cors: true
+          authorizer:
+            name: PrivateAuthorizer
+            type: COGNITO_USER_POOLS
+            arn:
+              Fn::GetAtt:
+                - UserPool
+                - Arn
+            claims:
+              - email
+
+  streamDataConsumer:
+    handler: functions/streamDataConsumer.handler
+    events:
+      - stream:
+          type: kinesis
+          arn:
+            Fn::GetAtt:
+              - IotToKinesisStream
+              - Arn
+          batchSize: 100
+          startingPosition: TRIM_HORIZON
+          enabled: true
