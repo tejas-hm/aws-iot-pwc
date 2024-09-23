@@ -11,9 +11,13 @@ const handler = async (event) => {
     Key: { email }
   };
 
+  console.log("Params", params);
+
   const response = await documentClient.get(params).promise();
   const userData = response.Item;
   const userDevices = userData.devices;
+
+  console.log("User Devices", userDevices);
 
   const Keys = Object.keys(userDevices).map((deviceIdItem) => {
     return { deviceId: deviceIdItem };
@@ -29,6 +33,8 @@ const handler = async (event) => {
     device.name = userDevices[device.deviceId].name;
     device.permissions = userDevices[device.deviceId].permissions;
   }
+
+  console.log("Devices", devices);
 
   return sendResponse(200, {
     message: "Success",

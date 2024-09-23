@@ -11,6 +11,15 @@ const handler = async (event) => {
   const { deviceId, deviceName } = body;
   const { email } = event.requestContext.authorizer.claims;
 
+  const initParams = {
+    TableName: "usersData",
+    Key: { email: email },
+    UpdateExpression: "SET devices = if_not_exists(devices, :emptyMap)",
+    ExpressionAttributeValues: {
+      ":emptyMap": {}
+    }
+  };
+
   const params = {
     TableName: "usersData",
     Key: {
@@ -22,15 +31,16 @@ const handler = async (event) => {
     },
     ExpressionAttributeValues: {
       ":deviceData": {
-        name: "Living Room AC",
+        name: deviceName,
         permissions: [SWITCH_POWER, VIEW_INFO, TEMP_CONTROL]
       }
     },
     ReturnValues: "UPDATED_NEW"
   };
-  console.log(params);
 
-  const a = await documentClient.update(params).promise();
+  await documentClient.update(initParams).promise();
+
+  await documentClient.update(params).promise();
 
   return sendResponse(200, {
     message: `Device id ${deviceId} has been added to user ${email}`

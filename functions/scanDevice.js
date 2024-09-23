@@ -1,25 +1,26 @@
 import { v4 as uuidv4 } from "uuid";
 const { sendResponse } = require("../utils");
+const DynamoDB = require("aws-sdk/clients/dynamodb");
+const documentClient = new DynamoDB.DocumentClient({ region: "us-east-1" });
 
 const handler = async (event) => {
   try {
     const params = {
-      TableName: "plansData"
+      TableName: "deviceData"
     };
 
-    const lim = Math.floor(Math.random() * (3 - 1 + 1) + 1);
+    const response = await documentClient.scan(params).promise();
+    const deviceData = response.Items;
 
-    const i = Math.floor(Math.random() * 3);
-
-    const deviceTypes = ["AC", "TV", "FRIDGE"];
+    const deviceTypes = { ac_type: "AC", tv_type: "TV", fridge_type: "FRIDGE" };
     const deviceBrands = ["Samsung", "LG", "IFB"];
 
     const devices = [];
-    for (let i = 0; i < lim; i++) {
+    for (let i = 0; i < deviceData.length; i++) {
       devices.push({
-        deviceId: uuidv4(),
+        deviceId: deviceData[i].deviceId,
         deviceBrand: deviceBrands[Math.floor(Math.random() * 3)],
-        deviceType: deviceTypes[Math.floor(Math.random() * 3)]
+        deviceType: deviceTypes[deviceData[i].deviceType]
       });
     }
 

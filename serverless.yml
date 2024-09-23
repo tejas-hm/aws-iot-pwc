@@ -216,6 +216,11 @@ resources:
         VersioningConfiguration:
           Status: Enabled
 
+    WebAppStorageBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: iot-poc-bucket-12321
+
 functions:
   loginUser:
     handler: functions/login.handler
